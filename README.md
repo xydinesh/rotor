@@ -13,3 +13,7 @@ terraform apply
 ```
 terraform destroy
 ```
+
+## Reference
+
+I used this repository as reference to apigateway configurations, [AWSinAction](https://github.com/xydinesh/apigateway)
