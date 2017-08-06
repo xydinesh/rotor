@@ -1,14 +1,3 @@
-provider "aws" {
-  region = "${var.region}"
-}
-variable "account_id" {
-  default = "452395698705"
-}
-
-variable "region" {
-  default = "us-west-1"
-}
-
 # First, we need a role to play with Lambda
 resource "aws_iam_role" "iam_role_for_lambda" {
   name = "iam_role_for_lambda"
@@ -30,74 +19,111 @@ resource "aws_iam_role" "iam_role_for_lambda" {
 EOF
 }
 
-# Here is a first lambda function that will run the code `rotor.handler`
-resource "aws_lambda_function" "lambda" {
-  filename      = "rotor.zip"
-  function_name = "rotor_handler"
-  handler       = "rotor.handler"
-  runtime       = "python2.7"
-  role    = "${aws_iam_role.iam_role_for_lambda.arn}"
-  source_code_hash = "${base64sha256(file("rotor.zip"))}"
+module "lambda" {
+  source = "./lambda"
+  name   = "rotor"
+  role   = "${aws_iam_role.iam_role_for_lambda.arn}"
 }
 
 resource "aws_api_gateway_rest_api" "rotor_api" {
   name = "Rotor API"
 }
 
-resource "aws_api_gateway_resource" "rotor_api_res" {
+resource "aws_api_gateway_resource" "rotor_api_resource" {
   rest_api_id = "${aws_api_gateway_rest_api.rotor_api.id}"
-  parent_id = "${aws_api_gateway_rest_api.rotor_api.root_resource_id}"
-  path_part = "rotor"
+  parent_id   = "${aws_api_gateway_rest_api.rotor_api.root_resource_id}"
+  path_part   = "rotor"
 }
 
-resource "aws_api_gateway_method" "request_method" {
+resource "aws_api_gateway_resource" "rotor_api_proxy_resource" {
   rest_api_id = "${aws_api_gateway_rest_api.rotor_api.id}"
-  resource_id = "${aws_api_gateway_resource.rotor_api_res.id}"
+  parent_id   = "${aws_api_gateway_resource.rotor_api_resource.id}"
+  path_part   = "{rotorId}"
+}
+
+resource "aws_api_gateway_resource" "rotor_api_proxy_name_resource" {
+  rest_api_id = "${aws_api_gateway_rest_api.rotor_api.id}"
+  parent_id   = "${aws_api_gateway_resource.rotor_api_proxy_resource.id}"
+  path_part   = "name"
+}
+
+
+module "rotor_get" {
+  source      = "./apigateway"
+  rest_api_id = "${aws_api_gateway_rest_api.rotor_api.id}"
+  resource_id = "${aws_api_gateway_resource.rotor_api_resource.id}"
+  account_id  = "${var.account_id}"
+  region      = "${var.region}"
   http_method = "GET"
-  authorization = "None"
+  lambda      = "${module.lambda.name}"
+  path        = "${aws_api_gateway_resource.rotor_api_resource.path}"
+  request_template = {
+    "application/json" = "{\"func\": \"get_handler\"}"
+  }
+
 }
 
-resource "aws_api_gateway_integration" "request_method_integration" {
+module "rotor_post" {
+  source      = "./apigateway"
   rest_api_id = "${aws_api_gateway_rest_api.rotor_api.id}"
-  resource_id = "${aws_api_gateway_resource.rotor_api_res.id}"
-  http_method = "${aws_api_gateway_method.request_method.http_method}"
-  type        = "AWS"
-  uri         = "arn:aws:apigateway:${var.region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${var.region}:${var.account_id}:function:rotor_handler/invocations"
+  resource_id = "${aws_api_gateway_resource.rotor_api_resource.id}"
+  account_id  = "${var.account_id}"
+  region      = "${var.region}"
+  http_method = "POST"
+  lambda      = "${module.lambda.name}"
+  path        = "${aws_api_gateway_resource.rotor_api_resource.path}"
+  request_template = {
+     "application/json" = "{\"func\": \"post_handler\"}"
+  }
 
-  # AWS lambdas can only be invoked with the POST method
-  integration_http_method = "POST"
 }
 
-resource "aws_api_gateway_method_response" "response_method" {
+module "rotor_get_vpath" {
+  source      = "./apigateway"
   rest_api_id = "${aws_api_gateway_rest_api.rotor_api.id}"
-  resource_id = "${aws_api_gateway_resource.rotor_api_res.id}"
-  http_method = "${aws_api_gateway_integration.request_method_integration.http_method}"
-  status_code = "200"
-  response_models = {
-    "application/json" = "Empty"
+  resource_id = "${aws_api_gateway_resource.rotor_api_proxy_resource.id}"
+  account_id  = "${var.account_id}"
+  region      = "${var.region}"
+  http_method = "GET"
+  lambda      = "${module.lambda.name}"
+  path        = "${aws_api_gateway_resource.rotor_api_proxy_resource.path}"
+  request_parameters = {
+    "method.request.path.rotorId" = true
+  }
+
+  request_template = {
+    "application/json" = "{\"func\": \"vpath_handler\", \"parameters\": {\"rotor_id\": \"$input.params('rotorId')\" }}"
   }
 }
 
-resource "aws_api_gateway_integration_response" "response_method_integration" {
+module "rotor_get_name" {
+  source      = "./apigateway"
   rest_api_id = "${aws_api_gateway_rest_api.rotor_api.id}"
-  resource_id = "${aws_api_gateway_resource.rotor_api_res.id}"
-  http_method = "${aws_api_gateway_method_response.response_method.http_method}"
-  status_code = "${aws_api_gateway_method_response.response_method.status_code}"
-  response_templates = {
-    "application/json" = ""
+  resource_id = "${aws_api_gateway_resource.rotor_api_proxy_name_resource.id}"
+  account_id  = "${var.account_id}"
+  region      = "${var.region}"
+  http_method = "GET"
+  lambda      = "${module.lambda.name}"
+  path        = "${aws_api_gateway_resource.rotor_api_proxy_name_resource.path}"
+  request_parameters = {
+    "method.request.path.rotorId" = true
+  }
+
+  request_template = {
+    "application/json" = "{\"func\": \"get_rotor_name\", \"parameters\": {\"rotor_id\": \"$input.params('rotorId')\" }}"
   }
 }
 
 resource "aws_lambda_permission" "allow_api_gateway" {
-  function_name = "rotor_handler"
-  statement_id = "AllowExecutionFromApiGateway"
-  action = "lambda:InvokeFunction"
-  principal = "apigateway.amazonaws.com"
-  source_arn = "arn:aws:execute-api:${var.region}:${var.account_id}:${aws_api_gateway_rest_api.rotor_api.id}/*/${aws_api_gateway_method.request_method.http_method}${aws_api_gateway_resource.rotor_api_res.path}"
+  function_name = "${module.lambda.name}"
+  statement_id  = "AllowExecutionFromApiGateway"
+  action        = "lambda:InvokeFunction"
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "arn:aws:execute-api:${var.region}:${var.account_id}:${aws_api_gateway_rest_api.rotor_api.id}/*"
 }
 
 resource "aws_api_gateway_deployment" "rotor_api_deployment" {
   rest_api_id = "${aws_api_gateway_rest_api.rotor_api.id}"
-  stage_name = "v1"
+  stage_name  = "v1"
   description = "Deploy methods: GET"
 }
